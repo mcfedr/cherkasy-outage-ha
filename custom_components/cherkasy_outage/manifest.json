@@ -1,0 +1,11 @@
+{
+  "domain": "cherkasy_outage",
+  "name": "Cherkasy Outage Schedule",
+  "version": "1.0.0",
+  "config_flow": true,
+  "documentation": "https://github.com/mcfedr/cherkasy-outage-ha",
+  "issue_tracker": "https://github.com/mcfedr/cherkasy-outage-ha/issues",
+  "requirements": ["telethon==1.36.0"],
+  "iot_class": "cloud_polling",
+  "codeowners": ["@mcfedr"]
+}

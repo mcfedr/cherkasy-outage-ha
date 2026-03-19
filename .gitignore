@@ -1,0 +1,10 @@
+# uv / Python tooling (used locally to generate icon.png only)
+.python-version
+pyproject.toml
+uv.lock
+main.py
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

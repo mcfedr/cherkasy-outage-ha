@@ -1,0 +1,46 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Cherkasy Outage — Connect to Telegram",
+        "description": "Enter your Telegram API credentials from https://my.telegram.org and your phone number.",
+        "data": {
+          "api_id": "Telegram API ID",
+          "api_hash": "Telegram API Hash",
+          "phone": "Phone number (international format, e.g. +380501234567)",
+          "channel": "Telegram channel username",
+          "group": "Outage group (e.g. 4.1)"
+        }
+      },
+      "auth_code": {
+        "title": "Cherkasy Outage — Enter Auth Code",
+        "description": "Telegram sent a code to {phone}. Enter it below.",
+        "data": {
+          "auth_code": "Telegram auth code",
+          "password": "2FA password (if enabled)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to Telegram. Check your API credentials and network.",
+      "invalid_auth": "Invalid auth code. Please try again.",
+      "code_expired": "The auth code has expired. Please restart the setup.",
+      "password_required": "Your account has 2FA enabled. Enter your password.",
+      "unknown": "An unexpected error occurred. Check the logs for details."
+    },
+    "abort": {
+      "already_configured": "This integration is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Cherkasy Outage — Options",
+        "data": {
+          "group": "Outage group",
+          "poll_interval": "Poll interval (minutes)"
+        }
+      }
+    }
+  }
+}
