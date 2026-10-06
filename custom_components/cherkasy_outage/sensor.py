@@ -1,217 +1,191 @@
-"""Sensor entities for Cherkasy Outage."""
+"""Sensors: queues, next outage start/end, today's and tomorrow's ГПВ windows."""
+
 from __future__ import annotations
 
-import logging
-from datetime import date, datetime, time, timedelta, timezone
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
-
-from . import CherkasyOutageCoordinator
-from .const import (
-    DOMAIN,
-    ENTITY_LAST_UPDATED,
-    ENTITY_NEXT_OUTAGE_END,
-    ENTITY_NEXT_OUTAGE_START,
-    ENTITY_SCHEDULE_TODAY,
-    ENTITY_SCHEDULE_TOMORROW,
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
 )
-from .parser import get_next_outage
+from homeassistant.const import EntityCategory
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
-_LOGGER = logging.getLogger(__name__)
+from .coordinator import OutageConfigEntry, OutageRuntime
+from .entity import OutageEntity
+from .helpers import kyiv_tz
+from .models import Outage
+
+NO_OUTAGES = "none"
+
+
+def _fmt(outage: Outage) -> str:
+    tz = kyiv_tz()
+    start = outage.start.astimezone(tz)
+    end = outage.end.astimezone(tz)
+    midnight = end.date() > start.date() and end.hour == 0 and end.minute == 0
+    return f"{start:%H:%M}–{'24:00' if midnight else f'{end:%H:%M}'}"
+
+
+def _day_state(runtime: OutageRuntime, day: date) -> str | None:
+    windows = runtime.windows_for(day)
+    if windows is None:
+        return None
+    return ", ".join(_fmt(o) for o in windows) or NO_OUTAGES
+
+
+def _day_attrs(runtime: OutageRuntime, day: date) -> dict[str, Any]:
+    post = runtime.schedule_posts.get(day)
+    windows = runtime.windows_for(day) or []
+    attrs: dict[str, Any] = {
+        "date": day.isoformat(),
+        "queue": runtime.queue,
+        "windows": [{"start": o.start.isoformat(), "end": o.end.isoformat()} for o in windows],
+        "hours": round(sum((o.end - o.start).total_seconds() for o in windows) / 3600, 2),
+    }
+    if post is not None:
+        attrs |= {
+            "title": post.title,
+            "published_at": post.published_at.isoformat(),
+            "is_update": post.is_update,
+            "cancelled": post.cancelled,
+        }
+    return attrs
+
+
+def _today() -> date:
+    return dt_util.now(kyiv_tz()).date()
+
+
+def _next_start(runtime: OutageRuntime) -> datetime | None:
+    outage = runtime.next_outage()
+    return outage.start if outage else None
+
+
+def _next_end(runtime: OutageRuntime) -> datetime | None:
+    outage = runtime.current_outage() or runtime.next_outage()
+    return outage.end if outage else None
+
+
+def _next_attrs(runtime: OutageRuntime) -> dict[str, Any]:
+    outage = runtime.next_outage()
+    return outage.as_dict() if outage else {}
+
+
+def _end_attrs(runtime: OutageRuntime) -> dict[str, Any]:
+    outage = runtime.current_outage() or runtime.next_outage()
+    return outage.as_dict() if outage else {}
+
+
+def _latest_post_time(runtime: OutageRuntime) -> datetime | None:
+    posts = runtime.schedule_posts.values()
+    return max((p.published_at for p in posts), default=None)
+
+
+def _queue_attrs(runtime: OutageRuntime) -> dict[str, Any]:
+    data = runtime.account.data
+    return {
+        "source": runtime.queue_source,
+        "api_queue": data.queue.gpv if data else None,
+        "queue_info": list(data.queue.raw) if data else [],
+    }
+
+
+@dataclass(frozen=True, kw_only=True)
+class OutageSensorDescription(SensorEntityDescription):
+    value_fn: Callable[[OutageRuntime], Any]
+    attrs_fn: Callable[[OutageRuntime], dict[str, Any]] | None = None
+    source: str = "any"  # which coordinator decides availability: schedule/account/any
+
+
+SENSORS: tuple[OutageSensorDescription, ...] = (
+    OutageSensorDescription(
+        key="next_start",
+        translation_key="next_start",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=_next_start,
+        attrs_fn=_next_attrs,
+    ),
+    OutageSensorDescription(
+        key="next_end",
+        translation_key="next_end",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=_next_end,
+        attrs_fn=_end_attrs,
+    ),
+    OutageSensorDescription(
+        key="today",
+        translation_key="today",
+        value_fn=lambda r: _day_state(r, _today()),
+        attrs_fn=lambda r: _day_attrs(r, _today()),
+        source="schedule",
+    ),
+    OutageSensorDescription(
+        key="tomorrow",
+        translation_key="tomorrow",
+        value_fn=lambda r: _day_state(r, _today() + timedelta(days=1)),
+        attrs_fn=lambda r: _day_attrs(r, _today() + timedelta(days=1)),
+        source="schedule",
+    ),
+    OutageSensorDescription(
+        key="queue",
+        translation_key="queue",
+        value_fn=lambda r: r.queue,
+        attrs_fn=_queue_attrs,
+    ),
+    OutageSensorDescription(
+        key="emergency_queue",
+        translation_key="emergency_queue",
+        value_fn=lambda r: r.account.data.queue.gav if r.account.data else None,
+        source="account",
+    ),
+    OutageSensorDescription(
+        key="schedule_published",
+        translation_key="schedule_published",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_latest_post_time,
+        source="schedule",
+    ),
+)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: OutageConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    coordinator: CherkasyOutageCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        [
-            OutageScheduleSensor(coordinator, entry, "today"),
-            OutageScheduleSensor(coordinator, entry, "tomorrow"),
-            NextOutageSensor(coordinator, entry, "start"),
-            NextOutageSensor(coordinator, entry, "end"),
-            LastUpdatedSensor(coordinator, entry),
-        ]
-    )
+    async_add_entities(OutageSensor(entry.runtime_data, d) for d in SENSORS)
 
 
-# ---------------------------------------------------------------------------
-# Base
-# ---------------------------------------------------------------------------
+class OutageSensor(OutageEntity, SensorEntity):
+    entity_description: OutageSensorDescription
 
-class _OutageBase(CoordinatorEntity):
-    """Common base for all Cherkasy Outage entities."""
-
-    _attr_has_entity_name = True
-
-    def __init__(
-        self,
-        coordinator: CherkasyOutageCoordinator,
-        entry: ConfigEntry,
-        unique_suffix: str,
-    ) -> None:
-        super().__init__(coordinator)
-        self._entry = entry
-        self._attr_unique_id = f"{entry.entry_id}_{unique_suffix}"
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-            "name": f"Cherkasy Outage — {self.coordinator.group}",
-            "manufacturer": "Cherkasy Oblenergo",
-            "model": "Schedule Monitor",
-        }
-
-
-# ---------------------------------------------------------------------------
-# Schedule sensors (today / tomorrow)
-# ---------------------------------------------------------------------------
-
-class OutageScheduleSensor(_OutageBase, SensorEntity):
-    """Shows total outage hours for today or tomorrow."""
-
-    def __init__(
-        self,
-        coordinator: CherkasyOutageCoordinator,
-        entry: ConfigEntry,
-        day: str,  # "today" or "tomorrow"
-    ) -> None:
-        unique_suffix = ENTITY_SCHEDULE_TODAY if day == "today" else ENTITY_SCHEDULE_TOMORROW
-        super().__init__(coordinator, entry, unique_suffix)
-        self._day = day
-        self._attr_name = f"Outage schedule {day}"
-        self._attr_icon = "mdi:lightning-bolt-off"
-
-    @property
-    def _day_data(self) -> dict[str, Any] | None:
-        if self.coordinator.data is None:
-            return None
-        return self.coordinator.data.get(self._day)
-
-    @property
-    def native_value(self) -> str:
-        data = self._day_data
-        if data is None:
-            return "none"
-        return f"{data['total_hours']}h"
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        data = self._day_data
-        if data is None:
-            return {}
-        return {
-            "date": data["date"],
-            "windows": data["windows"],
-            "windows_formatted": data["windows_formatted"],
-            "window_count": len(data["windows"]),
-            "group": self.coordinator.group,
-        }
+    def __init__(self, runtime: OutageRuntime, description: OutageSensorDescription) -> None:
+        super().__init__(runtime, description.key)
+        self.entity_description = description
 
     @property
     def available(self) -> bool:
-        return self.coordinator.last_update_success
+        source = self.entity_description.source
+        if source == "schedule":
+            return self.runtime.schedule.last_update_success
+        if source == "account":
+            return self.runtime.account.last_update_success
+        return super().available
 
+    @property
+    def native_value(self) -> Any:
+        return self.entity_description.value_fn(self.runtime)
 
-# ---------------------------------------------------------------------------
-# Next outage start / end sensors
-# ---------------------------------------------------------------------------
-
-class NextOutageSensor(_OutageBase, SensorEntity):
-    """Datetime of the next outage window start or end."""
-
-    _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_icon = "mdi:clock-alert-outline"
-
-    def __init__(
-        self,
-        coordinator: CherkasyOutageCoordinator,
-        entry: ConfigEntry,
-        bound: str,  # "start" or "end"
-    ) -> None:
-        unique_suffix = ENTITY_NEXT_OUTAGE_START if bound == "start" else ENTITY_NEXT_OUTAGE_END
-        super().__init__(coordinator, entry, unique_suffix)
-        self._bound = bound
-        self._attr_name = f"Next outage {bound}"
-
-    def _find_next_window(self) -> dict[str, str] | None:
-        data = self.coordinator.data
-        if not data:
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        if self.entity_description.attrs_fn is None:
             return None
-
-        now = datetime.now()
-        today = now.date()
-        tomorrow = today + timedelta(days=1)
-        current_time = now.time()
-
-        # Try today first
-        today_data = data.get("today")
-        if today_data and today_data["date"] == today.isoformat():
-            w = get_next_outage(today_data["windows"], current_time)
-            if w is not None:
-                return {"window": w, "date": today}
-
-        # Fall back to tomorrow
-        tomorrow_data = data.get("tomorrow")
-        if tomorrow_data and tomorrow_data["date"] == tomorrow.isoformat():
-            if tomorrow_data["windows"]:
-                return {"window": tomorrow_data["windows"][0], "date": tomorrow}
-
-        return None
-
-    @property
-    def native_value(self) -> datetime | None:
-        result = self._find_next_window()
-        if result is None:
-            return None
-        window = result["window"]
-        day: date = result["date"]
-        time_str = window[self._bound]
-        h, m = map(int, time_str.split(":"))
-        # Midnight-end: treat as start of next day
-        if h == 0 and m == 0 and self._bound == "end":
-            day = day + timedelta(days=1)
-        local_tz = datetime.now().astimezone().tzinfo
-        return datetime(day.year, day.month, day.day, h, m, tzinfo=local_tz)
-
-    @property
-    def available(self) -> bool:
-        return self.coordinator.last_update_success
-
-
-# ---------------------------------------------------------------------------
-# Last updated sensor
-# ---------------------------------------------------------------------------
-
-class LastUpdatedSensor(_OutageBase, SensorEntity):
-    """Timestamp of when the schedule was last successfully fetched."""
-
-    _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_name = "Schedule last updated"
-    _attr_icon = "mdi:update"
-
-    def __init__(
-        self,
-        coordinator: CherkasyOutageCoordinator,
-        entry: ConfigEntry,
-    ) -> None:
-        super().__init__(coordinator, entry, ENTITY_LAST_UPDATED)
-
-    @property
-    def native_value(self) -> datetime | None:
-        data = self.coordinator.data
-        if not data or not data.get("last_updated"):
-            return None
-        return datetime.fromisoformat(data["last_updated"])
-
-    @property
-    def available(self) -> bool:
-        return self.coordinator.last_update_success
+        return self.entity_description.attrs_fn(self.runtime)

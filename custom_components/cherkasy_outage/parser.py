@@ -1,221 +1,292 @@
-"""Parse Cherkasy Oblenergo Telegram messages into structured outage schedules."""
+"""Parsers for Cherkasyoblenergo responses.
+
+Pure functions only (no Home Assistant imports) so they can be tested against the
+recorded fixtures in ``tests/fixtures``. All times the oblenergo publishes are Kyiv
+local time; callers pass the ``tzinfo`` to attach.
+"""
+
 from __future__ import annotations
 
-import logging
+from collections.abc import Iterable
+from datetime import date, datetime, time, timedelta, tzinfo
+import html
 import re
-from datetime import date, datetime, time, timedelta
 from typing import Any
 
-from .const import UA_MONTHS
+from .const import KIND_GPV
+from .models import Outage, QueueInfo, SchedulePost
 
-_LOGGER = logging.getLogger(__name__)
+UA_MONTHS: dict[str, int] = {
+    "січня": 1,
+    "лютого": 2,
+    "березня": 3,
+    "квітня": 4,
+    "травня": 5,
+    "червня": 6,
+    "липня": 7,
+    "серпня": 8,
+    "вересня": 9,
+    "жовтня": 10,
+    "листопада": 11,
+    "грудня": 12,
+}
 
-# Matches lines like: "4.1 04:00 - 06:00, 09:00 - 12:00"
-# Group 1 = outage group, Group 2 = rest of the line with time ranges
-GROUP_PATTERN = re.compile(
-    r"^(\d+\.\d+)\s+((?:\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}[,\s]*)+)",
-    re.MULTILINE,
-)
-
-# Matches individual time windows: "04:00 - 06:00" or "04:00–06:00"
-TIME_RANGE_PATTERN = re.compile(r"(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})")
-
-# Matches Ukrainian date phrases: "на 19 березня 2026" or "19 березня 2026"
-DATE_PATTERN = re.compile(
-    r"(?:на\s+)?(\d{1,2})\s+(" + "|".join(UA_MONTHS.keys()) + r")(?:\s+(\d{4}))?",
+_BLOCK_END_RE = re.compile(r"</(?:p|div|li|h\d)>|<br\s*/?>", re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
+_DATE_IN_TEXT_RE = re.compile(r"(\d{1,2})\s+(" + "|".join(UA_MONTHS) + r")", re.IGNORECASE)
+# "4.1 09:00 - 11:00, 19:00 - 21:00" (separator after the queue is optional)
+_QUEUE_LINE_RE = re.compile(r"^\s*(\d{1,2}\.\d)(?!\d)\s*[:\-–—]?\s*(.*)$")
+_WINDOW_RE = re.compile(r"(\d{1,2})[:.](\d{2})\s*[-–—]\s*(\d{1,2})[:.](\d{2})")
+_CANCELLED_RE = re.compile(
+    r"не\s+(?:буд\w*\s+)?застосов\w*|застосов\w*\s+не\s+буд\w*|скасов\w*|не\s+діят\w*",
     re.IGNORECASE,
 )
-
-# Keywords that identify schedule messages
-_SCHEDULE_KEYWORDS = (
-    "графік погодинних",
-    "години відсутності",
-    "відключення електроенергії",
-    "черговий графік",
-)
-
-# Keyword indicating this is an updated/revised schedule
-_UPDATE_KEYWORD = "оновлений"
+_CABINET_TIME_RE = re.compile(r"(\d{1,2}):(\d{2})\s+(\d{1,2})\.(\d{1,2})\.(\d{4})")
+_GPV_QUEUE_RE = re.compile(r"(\d+)\s*черг\w*\D{0,5}(\d+)\s*підчерг", re.IGNORECASE)
+_DOTTED_QUEUE_RE = re.compile(r"(\d+\.\d+)")
+_PLAIN_QUEUE_RE = re.compile(r"(\d+)\s*черг", re.IGNORECASE)
 
 
-def _is_schedule_message(text: str) -> bool:
-    lower = text.lower()
-    return any(kw in lower for kw in _SCHEDULE_KEYWORDS)
+# ---------------------------------------------------------------------------
+# Generic helpers
+# ---------------------------------------------------------------------------
 
 
-def _is_update(text: str) -> bool:
-    return _UPDATE_KEYWORD in text.lower()
+def as_list(value: Any) -> list[Any]:
+    """Normalise an API collection: arrays come back as lists or index-keyed objects."""
+    if not value:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return list(value.values())
+    return []
 
 
-def _extract_date_from_message(text: str, msg_date: datetime) -> date | None:
-    """Parse a Ukrainian date phrase from *text*. Falls back to *msg_date* year."""
-    m = DATE_PATTERN.search(text)
-    if not m:
-        return None
-    day = int(m.group(1))
-    month = UA_MONTHS.get(m.group(2).lower())
-    if month is None:
-        return None
-    year = int(m.group(3)) if m.group(3) else msg_date.year
+def html_to_text(content: str) -> str:
+    """Turn the oblenergo's HTML snippets into plain text, one block per line."""
+    text = _BLOCK_END_RE.sub("\n", content or "")
+    text = html.unescape(_TAG_RE.sub("", text)).replace("\xa0", " ")
+    lines = (re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines())
+    return "\n".join(line for line in lines if line)
+
+
+def _at(day: date, hhmm: str, tz: tzinfo) -> datetime:
+    """Resolve "HH:MM" on *day* (allowing "24:00") to an aware datetime."""
+    hours, minutes = (int(part) for part in hhmm.split(":"))
+    if hours == 24 and minutes == 0:
+        return datetime.combine(day + timedelta(days=1), time(0, 0), tz)
+    return datetime.combine(day, time(hours, minutes), tz)
+
+
+def merge_outages(outages: Iterable[Outage]) -> list[Outage]:
+    """Drop duplicates and merge overlapping/adjacent windows of the same kind."""
+    merged: list[Outage] = []
+    for outage in sorted(set(outages), key=lambda o: (o.kind, o.summary, o.start, o.end)):
+        last = merged[-1] if merged else None
+        if (
+            last is not None
+            and last.kind == outage.kind
+            and last.summary == outage.summary
+            and outage.start <= last.end
+        ):
+            if outage.end > last.end:
+                merged[-1] = Outage(
+                    kind=last.kind,
+                    start=last.start,
+                    end=outage.end,
+                    summary=last.summary,
+                    description=last.description,
+                    status=last.status,
+                    end_is_estimate=outage.end_is_estimate,
+                )
+            continue
+        merged.append(outage)
+    return sorted(merged, key=lambda o: (o.start, o.end, o.kind))
+
+
+# ---------------------------------------------------------------------------
+# News posts (hourly ГПВ schedule by queue)
+# ---------------------------------------------------------------------------
+
+
+def is_schedule_title(title: str) -> bool:
+    """True for "Графік погодинних відключень (ГПВ) на 7 жовтня" and its updates."""
+    lower = (title or "").lower()
+    return "погодинн" in lower and "відключ" in lower
+
+
+def parse_published_at(value: str, tz: tzinfo) -> datetime | None:
+    """Parse the API's naive ISO timestamp (Kyiv local time)."""
     try:
-        return date(year, month, day)
-    except ValueError:
+        parsed = datetime.fromisoformat(value)
+    except TypeError, ValueError:
         return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=tz)
 
 
-def _parse_windows(group_line: str) -> list[dict[str, str]]:
-    """Extract time windows from a group line, e.g. '04:00 - 06:00, 16:00 - 20:00'."""
-    windows: list[dict[str, str]] = []
-    for m in TIME_RANGE_PATTERN.finditer(group_line):
-        start_str = m.group(1)
-        end_str = m.group(2)
-        # Normalise "24:00" → "00:00" for end times (midnight end)
-        if end_str == "24:00":
-            end_str = "00:00"
-        windows.append({"start": start_str, "end": end_str})
-    return windows
-
-
-def _windows_for_group(text: str, group: str) -> list[dict[str, str]] | None:
-    """Find the line for *group* in *text* and parse its windows. Returns None if not found."""
-    for m in GROUP_PATTERN.finditer(text):
-        if m.group(1) == group:
-            return _parse_windows(m.group(2))
-    return None
-
-
-def _format_windows(windows: list[dict[str, str]]) -> str:
-    """Return a human-readable string like '04:00–06:00, 16:00–20:00'."""
-    return ", ".join(f"{w['start']}–{w['end']}" for w in windows)
-
-
-def _total_hours(windows: list[dict[str, str]]) -> float:
-    """Sum of all window durations in hours."""
-    total = timedelta()
-    for w in windows:
-        h_s, m_s = map(int, w["start"].split(":"))
-        h_e, m_e = map(int, w["end"].split(":"))
-        start_t = timedelta(hours=h_s, minutes=m_s)
-        # Handle midnight-end windows (end == 00:00 means next midnight)
-        if h_e == 0 and m_e == 0:
-            end_t = timedelta(hours=24)
-        else:
-            end_t = timedelta(hours=h_e, minutes=m_e)
-        if end_t > start_t:
-            total += end_t - start_t
-    return round(total.total_seconds() / 3600, 1)
-
-
-# ------------------------------------------------------------------
-# Public API
-# ------------------------------------------------------------------
-
-def parse_schedule(
-    messages: list[dict[str, Any]],
-    group: str,
-    today: date | None = None,
-) -> dict[str, Any]:
-    """Parse schedule for *group* from *messages*.
-
-    Returns a dict with keys:
-      "today", "tomorrow" — each a dict with "date", "windows", "windows_formatted",
-                            "total_hours", "raw" (or None if no data)
-      "last_updated"      — ISO datetime string of the most recent relevant message
-      "group"             — the group string
-    """
-    if today is None:
-        today = date.today()
-    tomorrow = today + timedelta(days=1)
-
-    # Accumulate candidates: date → list of (msg_timestamp, is_update, windows, raw)
-    candidates: dict[date, list[tuple[datetime, bool, list, str]]] = {}
-
-    for msg in messages:
-        text = msg.get("text", "") or ""
-        if not _is_schedule_message(text):
+def _schedule_date(title: str, text: str, published_at: datetime) -> date | None:
+    match = _DATE_IN_TEXT_RE.search(title) or _DATE_IN_TEXT_RE.search(text)
+    if not match:
+        return None
+    day, month = int(match.group(1)), UA_MONTHS[match.group(2).lower()]
+    base = published_at.date()
+    candidates = []
+    for year in (base.year - 1, base.year, base.year + 1):
+        try:
+            candidates.append(date(year, month, day))
+        except ValueError:
             continue
-        msg_date: datetime = msg["date"]
-        sched_date = _extract_date_from_message(text, msg_date)
-        if sched_date is None:
-            _LOGGER.debug("Could not extract date from message %s", msg.get("id"))
+    if not candidates:
+        return None
+    # Pick the year that puts the date closest to when the post was published
+    # (handles posts on 31 December about 1 January).
+    return min(candidates, key=lambda d: abs((d - base).days))
+
+
+def parse_queue_lines(text: str) -> dict[str, list[tuple[str, str]]]:
+    """Extract "queue -> [(start, end), ...]" from the plain-text body of a post."""
+    queues: dict[str, list[tuple[str, str]]] = {}
+    for line in text.splitlines():
+        match = _QUEUE_LINE_RE.match(line)
+        if not match:
             continue
-        if sched_date not in (today, tomorrow):
+        windows = [
+            (f"{int(h1):02d}:{m1}", f"{int(h2):02d}:{m2}")
+            for h1, m1, h2, m2 in _WINDOW_RE.findall(match.group(2))
+        ]
+        queues.setdefault(match.group(1), []).extend(windows)
+    return queues
+
+
+def parse_schedule_post(
+    *, slug: str, title: str, content: str, published_at: datetime
+) -> SchedulePost | None:
+    """Parse one ГПВ news post. Returns None if it isn't a schedule post or has no date."""
+    if not is_schedule_title(title):
+        return None
+    text = html_to_text(content)
+    schedule_date = _schedule_date(title, text, published_at)
+    if schedule_date is None:
+        return None
+    queues = parse_queue_lines(text)
+    cancelled = not queues and bool(_CANCELLED_RE.search(f"{title}\n{text}"))
+    return SchedulePost(
+        slug=slug,
+        title=title,
+        schedule_date=schedule_date,
+        published_at=published_at,
+        is_update="оновл" in title.lower(),
+        cancelled=cancelled,
+        queues=queues,
+    )
+
+
+def latest_per_date(posts: Iterable[SchedulePost]) -> dict[date, SchedulePost]:
+    """Keep the most recently published usable post for each schedule date."""
+    latest: dict[date, SchedulePost] = {}
+    for post in posts:
+        if not post.queues and not post.cancelled:
             continue
-        windows = _windows_for_group(text, group)
-        if windows is None:
-            _LOGGER.debug(
-                "Group %s not found in message %s dated %s", group, msg.get("id"), sched_date
+        current = latest.get(post.schedule_date)
+        if current is None or (post.published_at, post.is_update) > (
+            current.published_at,
+            current.is_update,
+        ):
+            latest[post.schedule_date] = post
+    return latest
+
+
+def schedule_outages(posts: dict[date, SchedulePost], queue: str, tz: tzinfo) -> list[Outage]:
+    """All ГПВ windows for *queue*, across every known schedule date."""
+    outages: list[Outage] = []
+    for day, post in posts.items():
+        for start_s, end_s in post.queues.get(queue, []):
+            start = _at(day, start_s, tz)
+            end = _at(day, end_s, tz)
+            if end <= start:  # e.g. "23:00 - 01:00" runs past midnight
+                end += timedelta(days=1)
+            outages.append(
+                Outage(
+                    kind=KIND_GPV,
+                    start=start,
+                    end=end,
+                    summary=f"ГПВ {queue}",
+                    description=post.title,
+                )
             )
+    return merge_outages(outages)
+
+
+# ---------------------------------------------------------------------------
+# Cabinet API (account queue, planned and emergency works)
+# ---------------------------------------------------------------------------
+
+
+def parse_cabinet_time(value: str | None, tz: tzinfo) -> tuple[datetime | None, bool]:
+    """Parse "10:18 06.10.2026" / "16:00 08.10.2026 (план)" -> (datetime, is_estimate)."""
+    if not value:
+        return None, False
+    match = _CABINET_TIME_RE.search(value)
+    if not match:
+        return None, False
+    hours, minutes, day, month, year = (int(g) for g in match.groups())
+    try:
+        parsed = datetime(year, month, day, hours, minutes, tzinfo=tz)
+    except ValueError:
+        return None, False
+    return parsed, "план" in value.lower()
+
+
+def parse_disconnections(raw: Any, kind: str, tz: tzinfo) -> list[Outage]:
+    """Parse the DISCONNECTIONS array of a disconn_by_ls / disconn_by_dept response."""
+    outages: list[Outage] = []
+    for item in as_list(raw):
+        if not isinstance(item, dict):
             continue
-        ts = msg.get("edit_date") or msg_date
-        is_upd = _is_update(text)
-        candidates.setdefault(sched_date, []).append((ts, is_upd, windows, text))
-
-    def _best(day: date) -> dict[str, Any] | None:
-        entries = candidates.get(day)
-        if not entries:
-            return None
-        # Prefer "updated" messages; within the same priority, take the most recent
-        entries.sort(key=lambda e: (e[1], e[0]))
-        _, _, windows, raw = entries[-1]
-        return {
-            "date": day.isoformat(),
-            "windows": windows,
-            "windows_formatted": _format_windows(windows),
-            "total_hours": _total_hours(windows),
-            "raw": raw,
-        }
-
-    all_ts = [
-        (msg.get("edit_date") or msg["date"])
-        for msg in messages
-        if _is_schedule_message(msg.get("text", "") or "")
-    ]
-    last_updated = max(all_ts).isoformat() if all_ts else None
-
-    return {
-        "today": _best(today),
-        "tomorrow": _best(tomorrow),
-        "last_updated": last_updated,
-        "group": group,
-    }
+        start, _ = parse_cabinet_time(item.get("DATE_START"), tz)
+        end, estimate = parse_cabinet_time(item.get("DATE_STOP"), tz)
+        if start is None or end is None or end <= start:
+            continue
+        details = [
+            html_to_text(item.get("DATE_TIME") or ""),
+            html_to_text(item.get("ADDRESS") or ""),
+        ]
+        outages.append(
+            Outage(
+                kind=kind,
+                start=start,
+                end=end,
+                summary=str(item.get("DISCONN_TYPE") or kind),
+                description="\n".join(d for d in details if d),
+                status=item.get("STATE_CHAR"),
+                end_is_estimate=estimate,
+            )
+        )
+    return outages
 
 
-def get_next_outage(
-    windows: list[dict[str, str]],
-    ref_time: time,
-    windows_date: date | None = None,
-    ref_date: date | None = None,
-) -> dict[str, str] | None:
-    """Return the first window in *windows* that hasn't fully passed by *ref_time*.
-
-    If *windows_date* and *ref_date* are provided, skips windows from past dates.
-    """
-    if windows_date and ref_date and windows_date < ref_date:
-        return None
-    for w in windows:
-        h_e, m_e = map(int, w["end"].split(":"))
-        if h_e == 0 and m_e == 0:
-            # Midnight-end window never passes during the day
-            return w
-        end_t = time(h_e, m_e)
-        if end_t > ref_time:
-            return w
-    return None
-
-
-def is_currently_in_outage(windows: list[dict[str, str]], ref_time: time) -> bool:
-    """Return True if *ref_time* falls within any window."""
-    for w in windows:
-        h_s, m_s = map(int, w["start"].split(":"))
-        h_e, m_e = map(int, w["end"].split(":"))
-        start_t = time(h_s, m_s)
-        if h_e == 0 and m_e == 0:
-            # Midnight-end window: active from start until end of day
-            if ref_time >= start_t:
-                return True
-        else:
-            end_t = time(h_e, m_e)
-            if start_t <= ref_time < end_t:
-                return True
-    return False
+def parse_queue_info(raw: Any) -> QueueInfo:
+    """Read the account's ГПВ sub-queue and ГАВ queue from DISCONN_QUEUQ."""
+    texts = tuple(
+        str(item.get("QUEUE_INFO", "")).strip()
+        for item in as_list(raw)
+        if isinstance(item, dict) and item.get("QUEUE_INFO")
+    )
+    gpv: str | None = None
+    gav: str | None = None
+    for text in texts:
+        lower = text.lower()
+        if "погодинн" in lower and gpv is None:
+            if match := _GPV_QUEUE_RE.search(text):
+                gpv = f"{int(match.group(1))}.{int(match.group(2))}"
+            elif match := _DOTTED_QUEUE_RE.search(text):
+                gpv = match.group(1)
+        elif (
+            "аварійн" in lower
+            and "спеціальн" not in lower
+            and gav is None
+            and (match := _PLAIN_QUEUE_RE.search(text))
+        ):
+            gav = match.group(1)
+    return QueueInfo(gpv=gpv, gav=gav, raw=texts)

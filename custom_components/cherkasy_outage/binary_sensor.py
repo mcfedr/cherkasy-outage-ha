@@ -1,74 +1,35 @@
-"""Binary sensor — is there currently a scheduled outage?"""
+"""Binary sensor that is on while a scheduled outage window is in progress."""
+
 from __future__ import annotations
 
-import logging
-from datetime import datetime, date
+from typing import Any
 
-from homeassistant.components.binary_sensor import (
-    BinarySensorDeviceClass,
-    BinarySensorEntity,
-)
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import CherkasyOutageCoordinator
-from .const import DOMAIN, ENTITY_OUTAGE_ACTIVE
-from .parser import is_currently_in_outage
-
-_LOGGER = logging.getLogger(__name__)
+from .coordinator import OutageConfigEntry
+from .entity import OutageEntity
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: OutageConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    coordinator: CherkasyOutageCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([OutageActiveSensor(coordinator, entry)])
+    async_add_entities([ScheduledNowSensor(entry.runtime_data, "scheduled_now")])
 
 
-class OutageActiveSensor(CoordinatorEntity, BinarySensorEntity):
-    """True while the current time falls within a scheduled outage window."""
-
-    _attr_device_class = BinarySensorDeviceClass.POWER
-    _attr_has_entity_name = True
-    _attr_name = "Outage active"
-    _attr_icon = "mdi:transmission-tower-off"
-
-    def __init__(
-        self,
-        coordinator: CherkasyOutageCoordinator,
-        entry: ConfigEntry,
-    ) -> None:
-        super().__init__(coordinator)
-        self._entry = entry
-        self._attr_unique_id = f"{entry.entry_id}_{ENTITY_OUTAGE_ACTIVE}"
+class ScheduledNowSensor(OutageEntity, BinarySensorEntity):
+    """On while now is inside any known outage window (schedule, not grid state)."""
 
     @property
     def is_on(self) -> bool:
-        data = self.coordinator.data
-        if not data:
-            return False
-        now = datetime.now()
-        today = now.date()
-        current_time = now.time()
-
-        today_data = data.get("today")
-        if today_data and today_data["date"] == today.isoformat():
-            return is_currently_in_outage(today_data["windows"], current_time)
-        return False
+        return self.runtime.current_outage() is not None
 
     @property
-    def available(self) -> bool:
-        return self.coordinator.last_update_success
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-            "name": f"Cherkasy Outage — {self.coordinator.group}",
-            "manufacturer": "Cherkasy Oblenergo",
-            "model": "Schedule Monitor",
-        }
+    def extra_state_attributes(self) -> dict[str, Any]:
+        outage = self.runtime.current_outage()
+        if outage is None:
+            return {}
+        return {"kind": outage.kind, "summary": outage.summary, "ends_at": outage.end.isoformat()}

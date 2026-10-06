@@ -3,35 +3,40 @@
 Visual concept: electricity pylon silhouette with a bold red diagonal slash,
 on a dark navy background — instantly reads as "power outage".
 """
+
 import math
+
 from PIL import Image, ImageDraw
 
 SIZE = 256
-OUT = "icon.png"
+OUT = "custom_components/cherkasy_outage/brand/icon.png"
 
 # ── Palette ───────────────────────────────────────────────────────────────────
-BG          = (18,  30,  54)   # dark navy
-PYLON_BODY  = (180, 200, 230)  # cool steel blue-grey
-WIRE_COL    = (140, 165, 200)  # slightly dimmer wires
-SLASH_COL   = (220,  40,  40)  # bold red slash
+BG = (18, 30, 54)  # dark navy
+PYLON_BODY = (180, 200, 230)  # cool steel blue-grey
+WIRE_COL = (140, 165, 200)  # slightly dimmer wires
+SLASH_COL = (220, 40, 40)  # bold red slash
 
 img = Image.new("RGBA", (SIZE, SIZE), BG)
-d   = ImageDraw.Draw(img)
+d = ImageDraw.Draw(img)
+
 
 # ── Helper ────────────────────────────────────────────────────────────────────
 def line(x0, y0, x1, y1, col=PYLON_BODY, w=4):
     d.line([(x0, y0), (x1, y1)], fill=col, width=w)
 
+
 def poly(pts, col=PYLON_BODY):
     d.polygon(pts, fill=col)
 
+
 # ── Pylon geometry ────────────────────────────────────────────────────────────
-cx = SIZE // 2          # 128
+cx = SIZE // 2  # 128
 
 # Crossarm Y positions — spread out to fill more of the height
-arm1_y = 52             # top arm
-arm2_y = 108            # mid arm
-arm3_y = 152            # lower arm
+arm1_y = 52  # top arm
+arm2_y = 108  # mid arm
+arm3_y = 152  # lower arm
 
 # Arm half-widths
 arm1_hw = 72
@@ -39,13 +44,13 @@ arm2_hw = 54
 arm3_hw = 40
 
 # Tower leg spread at base
-base_y   = 220
-base_hw  = 36
-neck_y   = 172
+base_y = 220
+base_hw = 36
+neck_y = 172
 
 # ── Main tower legs ───────────────────────────────────────────────────────────
-top_y  = 38
-top_hw = 8              # narrow top
+top_y = 38
+top_hw = 8  # narrow top
 
 line(cx - top_hw, top_y, cx - base_hw, base_y, w=5)
 line(cx + top_hw, top_y, cx + base_hw, base_y, w=5)
@@ -81,21 +86,23 @@ line(cx + base_hw, arm3_y, cx + arm3_hw - 12, neck_y, w=3)
 
 # ── Base spreader feet ────────────────────────────────────────────────────────
 foot_w = 14
-line(cx - base_hw,        base_y, cx - base_hw - foot_w, base_y,     w=5)
-line(cx + base_hw,        base_y, cx + base_hw + foot_w, base_y,     w=5)
-line(cx - base_hw - 2,    base_y, cx - base_hw - 2,      base_y + 6, w=5)
-line(cx + base_hw + 2,    base_y, cx + base_hw + 2,      base_y + 6, w=5)
+line(cx - base_hw, base_y, cx - base_hw - foot_w, base_y, w=5)
+line(cx + base_hw, base_y, cx + base_hw + foot_w, base_y, w=5)
+line(cx - base_hw - 2, base_y, cx - base_hw - 2, base_y + 6, w=5)
+line(cx + base_hw + 2, base_y, cx + base_hw + 2, base_y + 6, w=5)
+
 
 # ── Drooping power lines (catenary-like with short polylines) ─────────────────
 def catenary(x0, x1, y_attach, sag, steps=14, col=WIRE_COL, w=2):
     pts = []
     for i in range(steps + 1):
-        t  = i / steps
+        t = i / steps
         xp = x0 + (x1 - x0) * t
         # parabolic sag
         yp = y_attach + sag * 4 * t * (1 - t)
         pts.append((xp, yp))
     d.line(pts, fill=col, width=w)
+
 
 # wires leave from arm-tip insulators, droop offscreen left/right
 for ay, hw in [(arm1_y + 8, arm1_hw), (arm2_y + 8, arm2_hw)]:
@@ -106,14 +113,14 @@ for ay, hw in [(arm1_y + 8, arm1_hw), (arm2_y + 8, arm2_hw)]:
 
 # ── Red slash (NO POWER) ──────────────────────────────────────────────────────
 slash_w = 18
-margin  = 26
+margin = 26
 # bold diagonal from top-right to bottom-left (like a "prohibited" slash)
 x0, y0 = SIZE - margin, margin
 x1, y1 = margin, SIZE - margin
 
 # draw thick line with round caps via multiple offset lines
 for offset in range(-slash_w // 2, slash_w // 2 + 1, 2):
-    dx =  offset * math.cos(math.radians(45))
+    dx = offset * math.cos(math.radians(45))
     dy = -offset * math.sin(math.radians(45))
     d.line([(x0 + dx, y0 + dy), (x1 + dx, y1 + dy)], fill=SLASH_COL, width=3)
 

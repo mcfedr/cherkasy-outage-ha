@@ -1,0 +1,26 @@
+target-version = "py314"
+line-length = 100
+
+[lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "C4",  # flake8-comprehensions
+  "B",   # flake8-bugbear
+  "UP",  # pyupgrade
+  "SIM", # flake8-simplify
+]
+ignore = [
+  "E501", # line length is the formatter's job
+]
+
+[lint.isort]
+known-first-party = ["custom_components.cherkasy_outage"]
+known-third-party = ["homeassistant"]
+force-sort-within-sections = true
+combine-as-imports = true
+
+[format]
+quote-style = "double"

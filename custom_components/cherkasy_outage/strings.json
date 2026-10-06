@@ -2,45 +2,94 @@
   "config": {
     "step": {
       "user": {
-        "title": "Cherkasy Outage — Connect to Telegram",
-        "description": "Enter your Telegram API credentials from https://my.telegram.org and your phone number.",
-        "data": {
-          "api_id": "Telegram API ID",
-          "api_hash": "Telegram API Hash",
-          "phone": "Phone number (international format, e.g. +380501234567)",
-          "channel": "Telegram channel username",
-          "group": "Outage group (e.g. 4.1)"
+        "title": "Cherkasyoblenergo outages",
+        "description": "Find your personal account (особовий рахунок) by address, or enter its number.",
+        "menu_options": {
+          "department": "Find by address",
+          "account": "Enter account number"
         }
       },
-      "auth_code": {
-        "title": "Cherkasy Outage — Enter Auth Code",
-        "description": "Telegram sent a code to {phone}. Enter it below.",
-        "data": {
-          "auth_code": "Telegram auth code",
-          "password": "2FA password (if enabled)"
-        }
+      "department": {
+        "title": "Branch",
+        "data": { "department_id": "Branch" }
+      },
+      "city": {
+        "title": "Settlement",
+        "data": { "city_id": "Settlement" }
+      },
+      "street_search": {
+        "title": "Street",
+        "description": "Type part of the street name, e.g. Шевченка.",
+        "data": { "street_search": "Street name" }
+      },
+      "street": {
+        "title": "Street",
+        "data": { "street_id": "Street" }
+      },
+      "house": {
+        "title": "Building",
+        "data": { "house": "Building" }
+      },
+      "select_account": {
+        "title": "Personal account",
+        "data": { "account": "Personal account" }
+      },
+      "account": {
+        "title": "Personal account",
+        "description": "The number from your bill or the oblenergo cabinet.",
+        "data": { "account": "Personal account number" }
+      },
+      "queue": {
+        "title": "Hourly schedule queue",
+        "description": "Cherkasyoblenergo did not report a queue for account {account}. Check the number; if it is right, choose your ГПВ queue (sub-queue), e.g. 4.1.",
+        "data": { "queue": "ГПВ queue" }
       }
     },
     "error": {
-      "cannot_connect": "Could not connect to Telegram. Check your API credentials and network.",
-      "invalid_auth": "Invalid auth code. Please try again.",
-      "code_expired": "The auth code has expired. Please restart the setup.",
-      "password_required": "Your account has 2FA enabled. Enter your password.",
-      "unknown": "An unexpected error occurred. Check the logs for details."
+      "cannot_connect": "Could not reach Cherkasyoblenergo.",
+      "no_streets": "No streets match that name.",
+      "invalid_account": "Enter the account number as digits only.",
+      "invalid_queue": "Use the form queue.sub-queue, e.g. 4.1."
     },
     "abort": {
-      "already_configured": "This integration is already configured."
+      "already_configured": "This account is already set up.",
+      "cannot_connect": "Could not reach Cherkasyoblenergo.",
+      "no_accounts": "No personal accounts are registered at that address."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Cherkasy Outage — Options",
-        "data": {
-          "group": "Outage group",
-          "poll_interval": "Poll interval (minutes)"
-        }
+        "title": "Queue",
+        "description": "Leave on auto to use the queue Cherkasyoblenergo reports for the account. Choose a queue to override it.",
+        "data": { "queue_override": "ГПВ queue" }
       }
+    },
+    "error": {
+      "invalid_queue": "Use auto, or the form queue.sub-queue, e.g. 4.1."
+    }
+  },
+  "device": {
+    "outages": { "name": "Power outages" }
+  },
+  "entity": {
+    "binary_sensor": {
+      "scheduled_now": { "name": "Scheduled now" }
+    },
+    "sensor": {
+      "next_start": { "name": "Next start" },
+      "next_end": { "name": "Next end" },
+      "today": { "name": "Today" },
+      "tomorrow": { "name": "Tomorrow" },
+      "queue": { "name": "Queue" },
+      "emergency_queue": { "name": "Emergency queue" },
+      "schedule_published": { "name": "Schedule published" }
+    }
+  },
+  "issues": {
+    "unparsed_schedule": {
+      "title": "Could not read an outage schedule",
+      "description": "These Cherkasyoblenergo posts look like hourly outage schedules but no queue times could be read from them: {titles}. The post format may have changed; outage times for those days are missing."
     }
   }
 }

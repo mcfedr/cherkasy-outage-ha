@@ -1,0 +1,29 @@
+{
+ "DATETIME": "20:07 06.10.2026",
+ "DISCONNECTIONS": [
+  {
+   "DISCONN_TYPE": "Аварійні",
+   "DATE_START": "10:20 02.10.2026",
+   "DATE_STOP": "11:35 02.10.2026",
+   "STATE_INT": "-1",
+   "STATE_CHAR": "Завершено",
+   "ADDRESS": "<strong>м. Черкаси</strong><br>вул. Праведниці Шулежко 31/2"
+  },
+  {
+   "DISCONN_TYPE": "Аварійні",
+   "DATE_START": "10:20 02.10.2026",
+   "DATE_STOP": "11:35 02.10.2026",
+   "STATE_INT": "-1",
+   "STATE_CHAR": "Завершено",
+   "ADDRESS": "<strong>м. Черкаси</strong><br>вул. Праведниці Шулежко 33"
+  },
+  {
+   "DISCONN_TYPE": "Аварійні",
+   "DATE_START": "15:04 06.10.2026",
+   "DATE_STOP": "17:02 06.10.2026",
+   "STATE_INT": "-1",
+   "STATE_CHAR": "Завершено",
+   "ADDRESS": "<strong>м. Черкаси</strong><br>вул. М. Залізняка 169/2"
+  }
+ ]
+}
