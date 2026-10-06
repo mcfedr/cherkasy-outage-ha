@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    name: Bump version and release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get current version
+        id: current
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('custom_components/cherkasy_outage/manifest.json'))['version'])")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Bump patch version
+        id: bump
+        run: |
+          IFS='.' read -r major minor patch <<< "${{ steps.current.outputs.version }}"
+          new_version="$major.$minor.$((patch + 1))"
+          echo "version=$new_version" >> "$GITHUB_OUTPUT"
+
+      - name: Update manifest.json
+        run: |
+          python3 -c "
+          import json
+          f = 'custom_components/cherkasy_outage/manifest.json'
+          data = json.load(open(f))
+          data['version'] = '${{ steps.bump.outputs.version }}'
+          json.dump(data, open(f, 'w'), indent=2)
+          print(open(f).read())
+          "
+
+      - name: Commit version bump
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Bump version to ${{ steps.bump.outputs.version }}"
+          tagging_message: "v${{ steps.bump.outputs.version }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.bump.outputs.version }}"
+          name: "v${{ steps.bump.outputs.version }}"
+          generate_release_notes: true

@@ -1,0 +1,22 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "scheduled_now": {
+        "default": "mdi:power-plug",
+        "state": { "on": "mdi:power-plug-off" }
+      }
+    },
+    "calendar": {
+      "outages": { "default": "mdi:calendar-alert" }
+    },
+    "sensor": {
+      "next_start": { "default": "mdi:transmission-tower-off" },
+      "next_end": { "default": "mdi:transmission-tower" },
+      "today": { "default": "mdi:calendar-today" },
+      "tomorrow": { "default": "mdi:calendar-arrow-right" },
+      "queue": { "default": "mdi:numeric" },
+      "emergency_queue": { "default": "mdi:alert-circle-outline" },
+      "schedule_published": { "default": "mdi:newspaper" }
+    }
+  }
+}

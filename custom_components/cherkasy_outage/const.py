@@ -1,50 +1,56 @@
-"""Constants for the Cherkasy Outage integration."""
+"""Constants for the Cherkasy Outage Schedule integration."""
 
-DOMAIN = "cherkasy_outage"
+from __future__ import annotations
 
-# Config entry keys
-CONF_API_ID = "api_id"
-CONF_API_HASH = "api_hash"
-CONF_PHONE = "phone"
-CONF_CHANNEL = "channel"
-CONF_GROUP = "group"
-CONF_POLL_INTERVAL = "poll_interval"
-CONF_AUTH_CODE = "auth_code"
-CONF_PASSWORD = "password"
+from datetime import timedelta
+from typing import Final
 
-# Defaults
-DEFAULT_CHANNEL = "pat_cherkasyoblenergo"
-DEFAULT_GROUP = "4.1"
-DEFAULT_POLL_INTERVAL = 30  # minutes
-MIN_POLL_INTERVAL = 5
-MAX_POLL_INTERVAL = 120
+DOMAIN: Final = "cherkasy_outage"
 
-# Session file stored in HA config directory
-SESSION_FILE = "cherkasy_outage_telethon"
+# The oblenergo publishes everything in Kyiv local time, whatever the HA time zone is.
+TIME_ZONE: Final = "Europe/Kyiv"
 
-# Number of recent messages to fetch
-FETCH_LIMIT = 30
+CABINET_URL: Final = "https://cabinet.cherkasyoblenergo.com/api_new/disconn.php"
+NEWS_LIST_URL: Final = "https://www.cherkasyoblenergo.com/api/v1/posts/category/news"
+NEWS_POST_URL: Final = "https://www.cherkasyoblenergo.com/api/v1/posts/{slug}"
 
-# Ukrainian month names → month number
-UA_MONTHS: dict[str, int] = {
-    "січня": 1,
-    "лютого": 2,
-    "березня": 3,
-    "квітня": 4,
-    "травня": 5,
-    "червня": 6,
-    "липня": 7,
-    "серпня": 8,
-    "вересня": 9,
-    "жовтня": 10,
-    "листопада": 11,
-    "грудня": 12,
-}
+# Config entry data
+CONF_ACCOUNT: Final = "account"
+CONF_ADDRESS: Final = "address"
+CONF_DEPARTMENT_ID: Final = "department_id"
+CONF_CITY_ID: Final = "city_id"
+CONF_STREET_ID: Final = "street_id"
+CONF_HOUSE: Final = "house"
+CONF_QUEUE: Final = "queue"  # ГПВ queue detected (or entered) at setup time
 
-# Entity IDs / unique ID suffixes
-ENTITY_SCHEDULE_TODAY = "schedule_today"
-ENTITY_SCHEDULE_TOMORROW = "schedule_tomorrow"
-ENTITY_NEXT_OUTAGE_START = "next_outage_start"
-ENTITY_NEXT_OUTAGE_END = "next_outage_end"
-ENTITY_LAST_UPDATED = "last_updated"
-ENTITY_OUTAGE_ACTIVE = "outage_active"
+# Config entry options
+CONF_QUEUE_OVERRIDE: Final = "queue_override"
+QUEUE_AUTO: Final = "auto"
+
+# Every ГПВ sub-queue the oblenergo has used so far (1.1 … 6.2).
+KNOWN_QUEUES: Final = [f"{q}.{s}" for q in range(1, 7) for s in (1, 2)]
+
+# Polling
+SCHEDULE_SCAN_INTERVAL: Final = timedelta(minutes=10)
+ACCOUNT_SCAN_INTERVAL: Final = timedelta(minutes=30)
+# Keep serving the last good data for this many failed polls before going unavailable.
+MAX_CONSECUTIVE_FAILURES: Final = 3
+
+# How far ahead to ask for planned / emergency works.
+ACCOUNT_LOOKAHEAD_DAYS: Final = 7
+# How many news posts to scan for schedule posts (newest first).
+NEWS_PAGE_SIZE: Final = 20
+# Schedule posts older than this (by publish time) are ignored.
+SCHEDULE_POST_MAX_AGE: Final = timedelta(days=3)
+
+# cabinet API disconn_selector values
+SELECTOR_PLANNED: Final = 0
+SELECTOR_EMERGENCY: Final = 1
+SELECTOR_SCHEDULES: Final = 2
+
+# Outage kinds
+KIND_GPV: Final = "gpv"
+KIND_PLANNED: Final = "planned"
+KIND_EMERGENCY: Final = "emergency"
+
+EVENT_SCHEDULE_CHANGED: Final = f"{DOMAIN}_schedule_changed"

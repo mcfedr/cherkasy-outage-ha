@@ -1,0 +1,3 @@
+# Runs tests_ha/ inside a real Home Assistant core. Keep this in step with the
+# HA version you run: pytest-homeassistant-custom-component 0.13.366 == HA 2026.9.3.
+pytest-homeassistant-custom-component==0.13.366
